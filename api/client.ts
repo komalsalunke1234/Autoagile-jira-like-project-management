@@ -1,5 +1,6 @@
 // API Client for MongoDB Backend
-const API_BASE_URL = 'http://localhost:8000';
+// Defaults to API service on 8001. Can be overridden in .env.local using VITE_API_BASE_URL.
+const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8001';
 
 // Generic API call function
 async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -54,18 +55,18 @@ export interface UserLogin {
 }
 
 export const userAPI = {
-    getAll: () => apiCall<any[]>('/api/users/'),
+    getAll: () => apiCall<any[]>('/api/users'),
 
     getById: (id: string) => apiCall<any>(`/api/users/${id}`),
 
     register: (userData: UserCreate) =>
-        apiCall<any>('/api/users/register', {
+        apiCall<any>('/api/auth/register', {
             method: 'POST',
             body: JSON.stringify(userData),
         }),
 
     login: (credentials: UserLogin) =>
-        apiCall<any>('/api/users/login', {
+        apiCall<any>('/api/auth/login', {
             method: 'POST',
             body: JSON.stringify(credentials),
         }),
@@ -94,14 +95,14 @@ export interface ProjectCreate {
 export const projectAPI = {
     getAll: (userId?: string) => {
         const params = userId ? `?user_id=${userId}` : '';
-        return apiCall<any[]>(`/api/projects/${params}`);
+        return apiCall<any[]>(`/api/projects${params}`);
     },
 
     getById: (id: string) => apiCall<any>(`/api/projects/${id}`),
 
     create: (projectData: ProjectCreate, leadId?: string) => {
         const params = leadId ? `?lead_id=${leadId}` : '';
-        return apiCall<any>(`/api/projects/${params}`, {
+        return apiCall<any>(`/api/projects${params}`, {
             method: 'POST',
             body: JSON.stringify(projectData),
         });
@@ -135,8 +136,10 @@ export interface TaskCreate {
     deptId: string;
     orgId?: string;
     projectId?: string;
+    sprintId?: string;
     requiredSkills?: string[];
     assigneeId?: string;
+    milestone?: boolean;
 }
 
 export const taskAPI = {
@@ -151,9 +154,15 @@ export const taskAPI = {
     getById: (id: string) => apiCall<any>(`/api/tasks/${id}`),
 
     create: (taskData: TaskCreate) =>
-        apiCall<any>('/api/tasks/', {
+        apiCall<any>('/api/tasks', {
             method: 'POST',
             body: JSON.stringify(taskData),
+        }),
+
+    suggestPriority: (payload: { title: string; description?: string; deadline: number; requiredSkills?: string[] }) =>
+        apiCall<any>('/api/tasks/ai-priority', {
+            method: 'POST',
+            body: JSON.stringify(payload),
         }),
 
     update: (id: string, updates: any) =>
@@ -173,6 +182,12 @@ export const taskAPI = {
             body: JSON.stringify({ quality, hoursSpent }),
         }),
 
+    addComment: (id: string, comment: { userId: string; userName: string; text: string }) =>
+        apiCall<any>(`/api/tasks/${id}/comments`, {
+            method: 'POST',
+            body: JSON.stringify(comment),
+        }),
+
     delete: (id: string) =>
         apiCall<any>(`/api/tasks/${id}`, {
             method: 'DELETE',
@@ -183,4 +198,42 @@ export const taskAPI = {
 
 export const healthAPI = {
     check: () => apiCall<any>('/health'),
+};
+
+// ===== Sprint API =====
+
+export interface SprintCreate {
+    name: string;
+    goal?: string;
+    projectId?: string;
+    startDate: number;
+    endDate: number;
+    status?: 'PLANNED' | 'ACTIVE' | 'COMPLETED';
+}
+
+export const sprintAPI = {
+    getAll: (projectId?: string) => {
+        const params = projectId ? `?project_id=${projectId}` : '';
+        return apiCall<any[]>(`/api/sprints${params}`);
+    },
+
+    create: (payload: SprintCreate) =>
+        apiCall<any>('/api/sprints', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        }),
+
+    update: (id: string, updates: Partial<SprintCreate>) =>
+        apiCall<any>(`/api/sprints/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(updates),
+        }),
+
+    burndown: (id: string) => apiCall<any>(`/api/sprints/${id}/burndown`),
+};
+
+// ===== Activity API =====
+
+export const analyticsAPI = {
+    getDeveloperActivity: (days = 7) => apiCall<any[]>(`/api/activity?days=${days}`),
 };

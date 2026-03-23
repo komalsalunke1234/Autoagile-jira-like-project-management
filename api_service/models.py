@@ -8,8 +8,10 @@ from enum import Enum
 
 class UserRole(str, Enum):
     ASSIGNEE = "ASSIGNEE"
+    TEAM_MEMBER = "ASSIGNEE"
     TEAM_LEAD = "TEAM_LEAD"
     MANAGER = "MANAGER"
+    PROJECT_MANAGER = "MANAGER"
     ADMIN = "ADMIN"
 
 class TaskStatus(str, Enum):
@@ -33,12 +35,18 @@ class ActionType(str, Enum):
     CRITICAL_ESCALATE = "CRITICAL_ESCALATE"
     NONE = "NONE"
 
+class SprintStatus(str, Enum):
+    PLANNED = "PLANNED"
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+
 # User Models
 class UserCreate(BaseModel):
     name: str
     email: EmailStr
     password: str
     role: UserRole = UserRole.ASSIGNEE
+    skills: List[str] = []
 
 class UserLogin(BaseModel):
     email: str
@@ -52,6 +60,7 @@ class UserResponse(BaseModel):
     teamId: str = "UNASSIGNED"
     deptId: str = "UNASSIGNED"
     reliabilityScore: float = 0.5
+    skills: List[str] = []
     
     class Config:
         from_attributes = True
@@ -87,8 +96,16 @@ class TaskCreate(BaseModel):
     description: str = ""
     priority: TaskPriority = TaskPriority.MEDIUM
     deadline: int  # timestamp in milliseconds
-    assigneeId: str
+    assigneeId: Optional[str] = None
+    teamId: Optional[str] = None
+    deptId: Optional[str] = None
+    orgId: Optional[str] = "ORG-001"
     projectId: Optional[str] = None
+    sprintId: Optional[str] = None
+    requiredSkills: List[str] = []
+    startDate: Optional[int] = None
+    estimatedDuration: Optional[int] = 60
+    dependencies: List[str] = []
 
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
@@ -97,6 +114,31 @@ class TaskUpdate(BaseModel):
     priority: Optional[TaskPriority] = None
     deadline: Optional[int] = None
     assigneeId: Optional[str] = None
+    sprintId: Optional[str] = None
+    startDate: Optional[int] = None
+    estimatedDuration: Optional[int] = None
+    dependencies: Optional[List[str]] = None
+    milestone: Optional[bool] = None
+
+class TaskCommentCreate(BaseModel):
+    userId: str
+    userName: str
+    text: str
+
+class TaskCommentResponse(BaseModel):
+    id: str
+    userId: str
+    userName: str
+    text: str
+    createdAt: int
+
+class TaskHistoryItem(BaseModel):
+    id: str
+    action: str
+    actorId: Optional[str] = None
+    actorName: Optional[str] = None
+    createdAt: int
+    metadata: Optional[dict] = {}
 
 class TaskResponse(BaseModel):
     id: str
@@ -105,11 +147,20 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     priority: TaskPriority
     deadline: int
+    startDate: int
+    estimatedDuration: int
+    dependencies: List[str] = []
+    actualStartDate: Optional[int] = None
     assigneeId: str
     teamId: str
     deptId: str
     orgId: str
     projectId: Optional[str] = None
+    sprintId: Optional[str] = None
+    milestone: bool = False
+    requiredSkills: List[str] = []
+    comments: List[TaskCommentResponse] = []
+    history: List[TaskHistoryItem] = []
     riskScore: int = 0
     lastAction: ActionType = ActionType.NONE
     updatedAt: int
@@ -134,6 +185,65 @@ class UserActionResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class SprintCreate(BaseModel):
+    name: str
+    goal: Optional[str] = ""
+    projectId: Optional[str] = None
+    startDate: int
+    endDate: int
+    status: SprintStatus = SprintStatus.PLANNED
+
+class SprintUpdate(BaseModel):
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    projectId: Optional[str] = None
+    startDate: Optional[int] = None
+    endDate: Optional[int] = None
+    status: Optional[SprintStatus] = None
+
+class SprintResponse(BaseModel):
+    id: str
+    name: str
+    goal: Optional[str] = ""
+    projectId: Optional[str] = None
+    startDate: int
+    endDate: int
+    status: SprintStatus
+    createdAt: int
+
+    class Config:
+        from_attributes = True
+
+class BurndownPoint(BaseModel):
+    date: int
+    idealRemaining: int
+    actualRemaining: int
+
+class BurndownResponse(BaseModel):
+    sprintId: str
+    totalTasks: int
+    points: List[BurndownPoint]
+
+class DeveloperActivityItem(BaseModel):
+    userId: str
+    userName: str
+    actions: int = 0
+    completedTasks: int = 0
+    commentsAdded: int = 0
+    statusChanges: int = 0
+    score: float = 0
+
+class TaskPrioritySuggestRequest(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    deadline: int
+    requiredSkills: List[str] = []
+
+class TaskPrioritySuggestResponse(BaseModel):
+    priority: TaskPriority
+    confidence: float
+    reason: str
 
 # Performance Models
 class PerformanceMetrics(BaseModel):

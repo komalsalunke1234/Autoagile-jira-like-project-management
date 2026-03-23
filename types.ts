@@ -11,8 +11,10 @@ export enum TaskStatus {
 
 export enum UserRole {
   ASSIGNEE = 'ASSIGNEE',
+  TEAM_MEMBER = 'ASSIGNEE',
   TEAM_LEAD = 'TEAM_LEAD',
   MANAGER = 'MANAGER', // Keeping for backward compat, effectively Team Lead
+  PROJECT_MANAGER = 'MANAGER',
   ADMIN = 'ADMIN' // Organization
 }
 
@@ -59,6 +61,56 @@ export interface Project {
   createdAt: number;
 }
 
+export interface Sprint {
+  id: string;
+  name: string;
+  goal?: string;
+  projectId?: string;
+  startDate: number;
+  endDate: number;
+  status: 'PLANNED' | 'ACTIVE' | 'COMPLETED';
+  createdAt: number;
+}
+
+export interface BurndownPoint {
+  date: number;
+  idealRemaining: number;
+  actualRemaining: number;
+}
+
+export interface BurndownData {
+  sprintId: string;
+  totalTasks: number;
+  points: BurndownPoint[];
+}
+
+export interface DeveloperActivity {
+  userId: string;
+  userName: string;
+  actions: number;
+  completedTasks: number;
+  commentsAdded: number;
+  statusChanges: number;
+  score: number;
+}
+
+export interface TaskComment {
+  id: string;
+  userId: string;
+  userName: string;
+  text: string;
+  createdAt: number;
+}
+
+export interface TaskHistoryEntry {
+  id: string;
+  action: string;
+  actorId?: string;
+  actorName?: string;
+  createdAt: number;
+  metadata?: Record<string, any>;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -75,7 +127,11 @@ export interface Task {
   deptId: string;
   orgId: string;
   projectId?: string; // Linked to Project
+  sprintId?: string;
+  milestone?: boolean;
   requiredSkills?: string[]; // Skills needed for this task
+  comments?: TaskComment[];
+  history?: TaskHistoryEntry[];
   riskScore: number;
   lastAction: ActionType;
   updatedAt: number;

@@ -10,6 +10,7 @@ interface GanttChartProps {
 const CELL_WIDTH = 40; // Pixels per hour
 const HEADER_HEIGHT = 40;
 const ROW_HEIGHT = 50;
+const LABEL_WIDTH = 192; // w-48 in Tailwind
 
 export const GanttChart: React.FC<GanttChartProps> = ({ tasks, users }) => {
     // 1. Calculate Time Range
@@ -92,27 +93,28 @@ export const GanttChart: React.FC<GanttChartProps> = ({ tasks, users }) => {
     });
 
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full">
-            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-                <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                    <span>📊</span> Adaptive Gantt Chart
+        <div className="glass-panel p-0 rounded-2xl overflow-hidden flex flex-col h-full border border-[var(--border-color)] shadow-sm">
+            <div className="p-4 border-b border-[var(--border-color)] flex justify-between items-center bg-[var(--bg-panel)] backdrop-blur-md">
+                <h3 className="font-bold text-[var(--text-primary)] flex items-center gap-2">
+                    <span className="text-lg">📊</span>
+                    <span className="tracking-wide text-sm uppercase">Temporal Execution Matrix</span>
                 </h3>
-                <div className="flex gap-2 text-xs">
-                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-blue-500 rounded"></div> Planned</div>
-                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500 rounded"></div> Actual</div>
-                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-red-500 rounded"></div> Critical Path</div>
+                <div className="flex gap-4 text-[10px] uppercase font-bold tracking-wider">
+                    <div className="flex items-center gap-1.5 text-slate-400"><div className="w-2 h-2 bg-indigo-500 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)]"></div> Planned</div>
+                    <div className="flex items-center gap-1.5 text-slate-400"><div className="w-2 h-2 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div> Actual</div>
+                    <div className="flex items-center gap-1.5 text-slate-400"><div className="w-2 h-2 bg-red-500 rounded-full shadow-[0_0_8px_rgba(239,68,68,0.5)] animate-pulse"></div> Critical</div>
                 </div>
             </div>
 
-            <div className="flex-1 overflow-auto relative">
-                <div style={{ minWidth: `${totalHours * CELL_WIDTH + 200}px` }}>
+            <div className="flex-1 overflow-auto relative custom-scrollbar bg-[var(--bg-app)]">
+                <div style={{ minWidth: `${totalHours * CELL_WIDTH + LABEL_WIDTH + 8}px` }}>
                     {/* Header */}
-                    <div className="flex sticky top-0 bg-slate-100 z-20 border-b border-slate-200" style={{ height: HEADER_HEIGHT }}>
-                        <div className="w-48 shrink-0 border-r border-slate-200 p-2 font-bold text-xs text-slate-500 flex items-center bg-slate-100 sticky left-0 z-30">
-                            Task Name
+                    <div className="flex sticky top-0 z-20 border-b border-[var(--border-color)] bg-[var(--bg-card)] backdrop-blur-xl" style={{ height: HEADER_HEIGHT }}>
+                        <div className="w-48 shrink-0 border-r border-[var(--border-color)] p-2 font-bold text-[10px] uppercase tracking-wider text-slate-500 flex items-center bg-[var(--bg-card)] sticky left-0 z-30 shadow-[4px_0_10px_var(--shadow-color)]">
+                            Operation Phase
                         </div>
                         {hoursArray.map((date, i) => (
-                            <div key={i} className="border-r border-slate-200 text-[10px] text-slate-400 p-1 flex items-center justify-center font-mono" style={{ width: CELL_WIDTH }}>
+                            <div key={i} className="border-r border-[var(--border-color)] text-[9px] text-slate-500 font-bold p-1 flex items-center justify-center font-mono" style={{ width: CELL_WIDTH }}>
                                 {date.getHours()}:00
                             </div>
                         ))}
@@ -122,9 +124,9 @@ export const GanttChart: React.FC<GanttChartProps> = ({ tasks, users }) => {
                     <div className="relative">
                         {/* Grid Lines */}
                         <div className="absolute inset-0 flex pointer-events-none">
-                            <div className="w-48 shrink-0 border-r border-slate-100 bg-transparent"></div>
+                            <div className="w-48 shrink-0 border-r border-[var(--border-color)] bg-transparent"></div>
                             {hoursArray.map((_, i) => (
-                                <div key={i} className="border-r border-slate-100 h-full" style={{ width: CELL_WIDTH }}></div>
+                                <div key={i} className="border-r border-[var(--border-color)] h-full" style={{ width: CELL_WIDTH }}></div>
                             ))}
                         </div>
 
@@ -132,44 +134,53 @@ export const GanttChart: React.FC<GanttChartProps> = ({ tasks, users }) => {
                             const start = task.startDate || Date.now();
                             const duration = task.estimatedDuration || 60; // minutes
                             const width = (duration / 60) * CELL_WIDTH;
-                            const left = timeToX(start) + 192; // 192 is w-48
+                            const left = timeToX(start) + LABEL_WIDTH;
                             const assignee = users.find(u => u.id === task.assigneeId);
 
                             // Check if critical (simplified logic for UI)
                             const isCritical = task.priority === 'HIGH' && task.deadline - (start + duration * 60000) < 3600000 * 4;
 
                             return (
-                                <div key={task.id} className="flex border-b border-slate-100 hover:bg-slate-50 relative group" style={{ height: ROW_HEIGHT }}>
+                                <div key={task.id} className="flex border-b border-[var(--border-color)] hover:bg-black/5 dark:hover:bg-white/5 relative group transition-colors" style={{ height: ROW_HEIGHT }}>
                                     {/* Label */}
-                                    <div className="w-48 shrink-0 border-r border-slate-200 p-3 flex flex-col justify-center sticky left-0 bg-white z-10 group-hover:bg-slate-50">
-                                        <p className="text-xs font-bold text-slate-700 truncate">{task.title}</p>
-                                        <p className="text-[10px] text-slate-400 truncate">{assignee?.name || 'Unassigned'}</p>
+                                    <div className="w-48 shrink-0 border-r border-[var(--border-color)] p-3 flex flex-col justify-center sticky left-0 bg-[var(--bg-card)] z-10 shadow-[4px_0_10px_var(--shadow-color)] transition-colors">
+                                        <p className="text-xs font-bold text-[var(--text-primary)] truncate transition-colors">{task.title}</p>
+                                        <div className="flex items-center gap-1.5 mt-1">
+                                            <div className="w-1.5 h-1.5 rounded-full bg-slate-600"></div>
+                                            <p className="text-[9px] text-slate-500 truncate font-mono">{assignee?.name || 'UNASSIGNED'}</p>
+                                        </div>
                                     </div>
 
                                     {/* Bar */}
-                                    <div className="absolute top-3 h-6 rounded-md shadow-sm border border-white/20 cursor-pointer transition-all hover:scale-y-110 z-0 text-[9px] flex items-center px-1 font-bold text-white overflow-hidden whitespace-nowrap"
+                                    <div className={`
+                                        absolute top-3 h-6 rounded border cursor-pointer transition-all hover:scale-y-110 z-0 text-[9px] flex items-center px-2 font-bold text-white overflow-hidden whitespace-nowrap shadow-lg
+                                        ${isCritical
+                                            ? 'bg-gradient-to-r from-red-600 to-red-500 border-red-400/30 shadow-[0_0_10px_rgba(239,68,68,0.3)]'
+                                            : 'bg-gradient-to-r from-indigo-600 to-indigo-500 border-indigo-400/30 shadow-[0_0_10px_rgba(99,102,241,0.3)]'}
+                                    `}
                                         style={{
                                             left: `${left}px`,
                                             width: `${Math.max(width, 2)}px`,
-                                            backgroundColor: isCritical ? '#ef4444' : '#3b82f6'
                                         }}
                                         title={`${task.title} (${duration}m)`}
                                     >
-                                        {width > 30 && task.title}
+                                        {width > 30 && <span className="drop-shadow-md">{task.title}</span>}
                                     </div>
 
                                     {/* Deadline Indicator */}
-                                    <div className="absolute top-0 bottom-0 w-0.5 bg-red-500/30 border-l border-red-500/50 border-dashed"
-                                        style={{ left: `${timeToX(task.deadline) + 192}px` }}
+                                    <div className="absolute top-0 bottom-0 w-px bg-red-500/50 border-l border-red-500/50 border-dashed z-0 opacity-50 group-hover:opacity-100 transition-opacity"
+                                        style={{ left: `${timeToX(task.deadline) + LABEL_WIDTH}px` }}
                                         title="Deadline"
-                                    ></div>
+                                    >
+                                        <div className="absolute -top-1 -translate-x-1/2 text-[8px] text-red-500 font-mono">⚠️</div>
+                                    </div>
                                 </div>
                             );
                         })}
                     </div>
 
-                    {/* SVG Overlay for Dependencies (Simplified for MVP: just drawing lines if logical) */}
-                    <svg className="absolute top-0 left-0 w-full h-full pointer-events-none z-0">
+                    {/* SVG Overlay for Dependencies */}
+                    <svg className="absolute top-0 left-0 w-full h-full pointer-events-none z-0 opacity-40">
                         {visualTasks.map((task, rowIndex) => (
                             task.dependencies?.map(depId => {
                                 const depTask = visualTasks.find(t => t.id === depId);
@@ -177,26 +188,27 @@ export const GanttChart: React.FC<GanttChartProps> = ({ tasks, users }) => {
                                 if (!depTask || depIndex === -1) return null;
 
                                 // Simple S-curve connection
-                                const startX = timeToX((depTask.startDate || 0) + (depTask.estimatedDuration || 0) * 60000) + 192;
-                                const startY = depIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-                                const endX = timeToX(task.startDate || 0) + 192;
-                                const endY = rowIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
+                                const startX = timeToX((depTask.startDate || 0) + (depTask.estimatedDuration || 0) * 60000) + LABEL_WIDTH;
+                                const startY = HEADER_HEIGHT + depIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
+                                const endX = timeToX(task.startDate || 0) + LABEL_WIDTH;
+                                const endY = HEADER_HEIGHT + rowIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
 
                                 return (
                                     <path
                                         key={`${depId}-${task.id}`}
                                         d={`M ${startX} ${startY} C ${startX + 20} ${startY}, ${endX - 20} ${endY}, ${endX} ${endY}`}
                                         fill="none"
-                                        stroke="#cbd5e1"
-                                        strokeWidth="2"
+                                        stroke="#64748b"
+                                        strokeWidth="1"
                                         markerEnd="url(#arrowhead)"
+                                        strokeDasharray="4 2"
                                     />
                                 );
                             })
                         ))}
                         <defs>
                             <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-                                <polygon points="0 0, 6 2, 0 4" fill="#cbd5e1" />
+                                <polygon points="0 0, 6 2, 0 4" fill="#64748b" />
                             </marker>
                         </defs>
                     </svg>

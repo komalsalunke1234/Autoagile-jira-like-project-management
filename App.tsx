@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Task, TaskStatus, User, DecisionLog, ActionType, UserRole, Project
+  Task, TaskStatus, User, DecisionLog, ActionType, UserRole, Project, Sprint, BurndownData, DeveloperActivity
 } from './types';
 import {
   INITIAL_TASKS, USERS, DEPARTMENTS, TEAMS
@@ -14,11 +14,15 @@ import { initMemories } from './vectorStore';
 import { autoAssignTask, getSkillMatchPercentage } from './assignmentService';
 import { SkillManager } from './SkillManager';
 import { GanttChart } from './GanttChart';
-import { userAPI, taskAPI, projectAPI } from './api/client';
+import { userAPI, taskAPI, projectAPI, sprintAPI, analyticsAPI } from './api/client';
+import { SprintManager } from './SprintManager';
+import { BurndownChart } from './BurndownChart';
+import { DeveloperActivityPanel } from './DeveloperActivityPanel';
+import { SprintStatusPieChart } from './SprintStatusPieChart';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [viewMode, setViewMode] = useState<'LIST' | 'GANTT'>('LIST');
+  const [viewMode, setViewMode] = useState<'LIST' | 'BOARD' | 'GANTT'>('BOARD');
   const [users, setUsers] = useState<User[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [logs, setLogs] = useState<DecisionLog[]>([]);
@@ -27,7 +31,32 @@ const App: React.FC = () => {
   const [lastRun, setLastRun] = useState<number>(Date.now());
   const [showSkillManager, setShowSkillManager] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [sprints, setSprints] = useState<Sprint[]>([]);
+  const [selectedSprintId, setSelectedSprintId] = useState<string | null>(null);
+  const [burndown, setBurndown] = useState<BurndownData | null>(null);
+  const [activity, setActivity] = useState<DeveloperActivity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [newComment, setNewComment] = useState('');
+  const [aiPriorityHint, setAiPriorityHint] = useState<string>('');
+
+  const [darkMode, setDarkMode] = useState(false);
+
+  const roleLabel = (role: UserRole) => {
+    const normalizedRole = String(role);
+    if (role === UserRole.ADMIN) return 'Admin';
+    if (normalizedRole === 'MANAGER') return 'Project Manager';
+    if (role === UserRole.TEAM_LEAD) return 'Team Lead';
+    return 'Team Member';
+  };
+
+  // Toggle Dark Mode
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [darkMode]);
 
   const handleLogin = (user: User) => {
     setCurrentUser(user);
@@ -66,6 +95,15 @@ const App: React.FC = () => {
         setProjects(loadedProjects);
         console.log('📁 Loaded projects from MongoDB:', loadedProjects.length, 'projects');
 
+        const loadedSprints = await sprintAPI.getAll();
+        setSprints(loadedSprints);
+        if (loadedSprints.length > 0) {
+          setSelectedSprintId(loadedSprints[0].id);
+        }
+
+        const loadedActivity = await analyticsAPI.getDeveloperActivity(7);
+        setActivity(loadedActivity);
+
       } catch (error) {
         console.error('Failed to load data from MongoDB:', error);
         console.log('⚠️ Using fallback mock data');
@@ -85,6 +123,16 @@ const App: React.FC = () => {
 
   // Autonomous loop simulator
   const isMonitoringRef = React.useRef(false);
+  const tasksRef = React.useRef<Task[]>([]);
+  const usersRef = React.useRef<User[]>([]);
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
+
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -100,8 +148,8 @@ const App: React.FC = () => {
         setIsMonitoring(true);
 
         await runMonitoringCycle(
-          tasks,
-          users,
+          tasksRef.current,
+          usersRef.current,
           (log) => setLogs(prev => [log, ...prev]),
           (updatedTasks) => {
             setTasks(updatedTasks);
@@ -119,7 +167,37 @@ const App: React.FC = () => {
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [tasks, currentUser, users]);
+  }, [currentUser]);
+
+  useEffect(() => {
+    const loadBurndown = async () => {
+      if (!selectedSprintId) {
+        setBurndown(null);
+        return;
+      }
+      try {
+        const data = await sprintAPI.burndown(selectedSprintId);
+        setBurndown(data);
+      } catch {
+        setBurndown(null);
+      }
+    };
+
+    loadBurndown();
+  }, [selectedSprintId, tasks]);
+
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const loadedActivity = await analyticsAPI.getDeveloperActivity(7);
+        setActivity(loadedActivity);
+      } catch {
+        // Ignore transient refresh errors
+      }
+    }, 60000);
+
+    return () => clearInterval(id);
+  }, []);
 
   // Filter tasks based on role
   const filteredTasks = useMemo(() => {
@@ -128,10 +206,12 @@ const App: React.FC = () => {
       case UserRole.ADMIN:
         return tasks;
       case UserRole.MANAGER:
+      case UserRole.PROJECT_MANAGER:
       case UserRole.TEAM_LEAD:
         // Show tasks for team or if lead is explicitly assigned
         return tasks.filter(t => t.teamId === currentUser.teamId);
       case UserRole.ASSIGNEE:
+      case UserRole.TEAM_MEMBER:
         // Show tasks assigned to user OR belonging to projects user is a member of
         const userProjectIds = projects
           .filter(p => p.memberIds.includes(currentUser.id))
@@ -144,7 +224,7 @@ const App: React.FC = () => {
       default:
         return [];
     }
-  }, [tasks, currentUser]);
+  }, [tasks, currentUser, projects]);
 
   const selectedTask = useMemo(() =>
     tasks.find(t => t.id === selectedTaskId),
@@ -165,7 +245,7 @@ const App: React.FC = () => {
       case TaskStatus.COMPLETED: return 'bg-green-100 text-green-700';
       case TaskStatus.AT_RISK: return 'bg-yellow-100 text-yellow-700';
       case TaskStatus.OVERDUE: return 'bg-red-100 text-red-700';
-      case TaskStatus.ESCALATED: return 'bg-purple-100 text-purple-700';
+      case TaskStatus.ESCALATED: return 'bg-black text-white';
       default: return 'bg-blue-100 text-blue-700';
     }
   };
@@ -203,6 +283,7 @@ const App: React.FC = () => {
         deptId: currentUser.deptId,
         orgId: 'ORG-001',
         projectId: formData.get('projectId') as string || undefined,
+        sprintId: formData.get('sprintId') as string || undefined,
         requiredSkills: selectedSkills.length > 0 ? selectedSkills : undefined,
         assigneeId: manualAssigneeId || undefined // Let backend auto-assign if empty
       };
@@ -225,6 +306,35 @@ const App: React.FC = () => {
     }
   };
 
+  const handleSuggestPriority = async (form: HTMLFormElement) => {
+    try {
+      const fd = new FormData(form);
+      const skillsSelect = form.querySelector('select[name="requiredSkills"]') as HTMLSelectElement;
+      const selectedSkills = skillsSelect ? Array.from(skillsSelect.selectedOptions).map(opt => opt.value) : [];
+      const deadlineMinutes = parseInt((fd.get('deadline') as string) || '60', 10);
+
+      const suggestion = await taskAPI.suggestPriority({
+        title: (fd.get('title') as string) || 'Untitled task',
+        description: (fd.get('description') as string) || '',
+        deadline: Date.now() + deadlineMinutes * 60 * 1000,
+        requiredSkills: selectedSkills,
+      });
+
+      const prioritySelect = form.querySelector('select[name="priority"]') as HTMLSelectElement;
+      if (prioritySelect && suggestion?.priority) {
+        prioritySelect.value = suggestion.priority;
+      }
+
+      setAiPriorityHint(`AI Priority: ${suggestion.priority} (${Math.round((suggestion.confidence || 0) * 100)}%) - ${suggestion.reason}`);
+    } catch (error: any) {
+      setAiPriorityHint(`AI priority failed: ${error.message}`);
+    }
+  };
+
+  const handleSprintCreated = (sprint: Sprint) => {
+    setSprints(prev => [sprint, ...prev]);
+  };
+
   const handleCompleteTask = async (taskId: string) => {
     try {
       console.log(`📝 Completing task ${taskId} automatically...`);
@@ -235,7 +345,7 @@ const App: React.FC = () => {
       console.log('✅ Task completed:', completedTask);
 
       // Update local state
-      setTasks(tasks.map(t => t.id === taskId ? completedTask : t));
+      setTasks(prev => prev.map(t => t.id === taskId ? completedTask : t));
 
       alert(`Task completed automatically!\n\nUse: Time spent has been calculated based on assignment duration.`);
     } catch (error: any) {
@@ -248,143 +358,266 @@ const App: React.FC = () => {
     setCurrentUser(updatedUser);
   };
 
+  const handleUpdateTaskStatus = async (taskId: string, status: TaskStatus) => {
+    try {
+      const updated = await taskAPI.updateStatus(taskId, status);
+      setTasks(prev => prev.map(t => t.id === taskId ? updated : t));
+    } catch (error: any) {
+      alert(`Failed to update status: ${error.message}`);
+    }
+  };
+
+  const handleAddComment = async () => {
+    if (!selectedTask || !currentUser || !newComment.trim()) return;
+    try {
+      const updated = await taskAPI.addComment(selectedTask.id, {
+        userId: currentUser.id,
+        userName: currentUser.name,
+        text: newComment.trim()
+      });
+      setTasks(prev => prev.map(t => t.id === selectedTask.id ? updated : t));
+      setNewComment('');
+    } catch (error: any) {
+      alert(`Failed to add comment: ${error.message}`);
+    }
+  };
+
   if (!currentUser) {
     return <Auth onLogin={handleLogin} />;
   }
 
   const userDept = DEPARTMENTS.find(d => d.id === currentUser.deptId);
-  const canManage = currentUser.role === UserRole.MANAGER || currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.TEAM_LEAD;
+  const canManage = currentUser.role === UserRole.MANAGER || currentUser.role === UserRole.PROJECT_MANAGER || currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.TEAM_LEAD;
+  const canUpdateTask = (task: Task) => canManage || task.assigneeId === currentUser.id;
+  const visibleTeamMembers = users.filter(u =>
+    currentUser.role === UserRole.ADMIN ||
+    u.teamId === currentUser.teamId ||
+    u.id === currentUser.id
+  );
 
   return (
-    <div className="flex flex-col lg:flex-row min-h-screen">
+    <div className="flex flex-col lg:flex-row min-h-screen font-sans selection:bg-indigo-500/30 transition-colors duration-300">
       {/* Sidebar Navigation */}
-      <aside className="w-full lg:w-64 bg-slate-900 text-white p-6 shrink-0 flex flex-col">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 bg-indigo-500 rounded-xl flex items-center justify-center font-bold shadow-lg shadow-indigo-500/20">AE</div>
+      <aside className="w-full lg:w-72 glass-panel border-r-0 border-r border-[var(--border-color)] p-6 shrink-0 flex flex-col relative overflow-hidden rounded-none">
+        {/* Decorative Glow */}
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 opacity-50"></div>
+        <div className="absolute -top-20 -left-20 w-40 h-40 bg-indigo-500/20 rounded-full blur-3xl"></div>
+
+        <div className="flex items-center gap-4 mb-10 relative z-10">
+          <div className="w-12 h-12 bg-gradient-to-br from-indigo-600 to-purple-700 rounded-xl flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30 border border-white/10">
+            <span className="text-xl">AE</span>
+          </div>
           <div>
-            <h1 className="text-lg font-bold leading-none">AEIP</h1>
-            <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-tighter">Enterprise Intelligence</span>
+            <h1 className="text-xl font-bold leading-none tracking-tight text-[var(--text-primary)]">AEIP</h1>
+            <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">Enterprise Intelligence</span>
           </div>
         </div>
 
-        <nav className="space-y-1 flex-1">
-          <div className="flex items-center gap-3 px-3 py-2 bg-indigo-500/10 text-indigo-400 rounded-lg font-medium cursor-pointer">
+        <nav className="space-y-2 flex-1 relative z-10">
+          <div className="nav-item bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
             <Icons.Dashboard />
-            <span>Overview</span>
+            <span className="font-medium">Overview</span>
           </div>
-          <div className="flex items-center gap-3 px-3 py-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer transition">
+          <div className="nav-item group">
             <Icons.Task />
-            <span>{currentUser.role === UserRole.ASSIGNEE ? 'My Workflows' : 'Team Execution'}</span>
+            <span className="group-hover:translate-x-1 transition-transform">{currentUser.role === UserRole.ASSIGNEE ? 'My Workflows' : 'Team Execution'}</span>
+            {filteredTasks.some(t => t.priority === 'HIGH') && (
+              <span className="ml-auto w-2 h-2 rounded-full bg-red-500 animate-pulse box-shadow-red"></span>
+            )}
           </div>
-          <div className="flex items-center gap-3 px-3 py-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer transition">
+          <div className="nav-item group">
             <Icons.Alert />
-            <span>Risk Center</span>
+            <span className="group-hover:translate-x-1 transition-transform">Risk Center</span>
           </div>
 
           {/* User Skills Section */}
-          <div className="mt-6 p-3 bg-slate-800/50 rounded-xl">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-bold text-slate-400 uppercase">Your Skills</p>
+          <div className="mt-8 pt-6 border-t border-[var(--border-color)]">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Active Skills</p>
               <button
                 onClick={() => setShowSkillManager(true)}
-                className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold uppercase underline"
+                className="text-[10px] text-indigo-500 hover:text-indigo-400 font-bold uppercase tracking-wide hover:underline transition-all"
               >
                 Manage
               </button>
             </div>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-1.5">
               {currentUser.skills && currentUser.skills.length > 0 ? (
-                currentUser.skills.slice(0, 6).map(skill => (
-                  <span key={skill} className="text-[9px] px-2 py-1 bg-indigo-500/20 text-indigo-300 rounded-md font-medium border border-indigo-500/30">
+                currentUser.skills.slice(0, 8).map(skill => (
+                  <span key={skill} className="text-[9px] px-2 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 rounded border border-[var(--border-color)] transition-colors">
                     {skill}
                   </span>
                 ))
               ) : (
-                <span className="text-[10px] text-slate-500 italic">No skills added</span>
+                <span className="text-[10px] text-slate-500 italic">No skills registered</span>
               )}
             </div>
-            {currentUser.skills && currentUser.skills.length > 6 && (
-              <p className="text-[9px] text-slate-500 mt-1">+{currentUser.skills.length - 6} more</p>
-            )}
           </div>
         </nav>
 
-        <div className="mt-auto pt-6 border-t border-slate-800">
-          <div className="flex items-center gap-3 mb-6 p-3 bg-slate-800/50 rounded-xl">
-            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold">{currentUser.name.charAt(0)}</div>
+        <div className="mt-auto pt-6 border-t border-[var(--border-color)] relative z-10">
+          <div className="flex items-center gap-3 mb-6 p-3 bg-white/50 dark:bg-slate-800/40 rounded-xl border border-[var(--border-color)] backdrop-blur-sm">
+            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-slate-200 to-slate-100 dark:from-slate-700 dark:to-slate-600 flex items-center justify-center text-slate-700 dark:text-white font-bold border border-[var(--border-color)] shadow-inner">
+              {currentUser.name.charAt(0)}
+            </div>
             <div className="overflow-hidden">
-              <p className="text-sm font-bold truncate">{currentUser.name}</p>
-              <p className="text-[10px] text-slate-500 uppercase font-bold">{currentUser.role}</p>
+              <p className="text-sm font-bold truncate text-[var(--text-primary)]">{currentUser.name}</p>
+              <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">{roleLabel(currentUser.role)}</p>
             </div>
           </div>
 
-          <div className="text-xs uppercase text-slate-500 mb-2 font-bold tracking-widest">System Engine</div>
-          <div className="flex items-center gap-2 text-[11px]">
-            <div className={`w-2 h-2 rounded-full ${isMonitoring ? 'bg-indigo-400 animate-pulse' : 'bg-green-400'}`}></div>
-            <span className="text-slate-300">Agentic Monitor: {isMonitoring ? 'Processing...' : 'Operational'}</span>
+          <div className="text-[10px] uppercase text-slate-500 mb-2 font-bold tracking-widest flex justify-between items-center">
+            <span>System Status</span>
+            <span className="text-emerald-500">98% UP</span>
           </div>
-          <div className="text-[10px] text-slate-500 mt-1">Next Cycle: {new Date(lastRun + 15000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+          <div className="flex items-center gap-2 text-[11px] mb-1">
+            <div className={`w-2 h-2 rounded-full ${isMonitoring ? 'bg-indigo-400 animate-pulse shadow-[0_0_8px_rgba(129,140,248,0.6)]' : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]'}`}></div>
+            <span className="text-slate-500 dark:text-slate-400 font-mono">{isMonitoring ? 'PROCESSING_AGENTS...' : 'OPERATIONAL'}</span>
+          </div>
+          <div className="text-[10px] text-slate-500 font-mono">Cycle ID: {lastRun.toString().slice(-8)}</div>
 
           <button
             onClick={handleLogout}
-            className="w-full mt-6 py-2 border border-slate-700 rounded-lg text-xs font-bold hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/20 transition"
+            className="w-full mt-6 py-2.5 border border-[var(--border-color)] rounded-lg text-xs font-bold text-slate-500 hover:bg-red-500/10 hover:text-red-500 transition-all duration-300 flex items-center justify-center gap-2 group"
           >
-            Logout session
+            <span>Terminate Session</span>
+            <span className="group-hover:translate-x-1 transition-transform">→</span>
           </button>
         </div>
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 p-4 lg:p-8 overflow-y-auto bg-slate-50">
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-8">
+      <main className="flex-1 p-4 lg:p-10 overflow-y-auto relative z-0">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-10">
           <div>
-            <div className="flex items-center gap-2 text-indigo-500 text-xs font-bold uppercase tracking-wider mb-1">
-              <span>{userDept?.name || 'Global Administration'}</span>
-              <span>•</span>
-              <span>{TEAMS.find(t => t.id === currentUser.teamId)?.name || 'General Org'}</span>
+            <div className="flex items-center gap-2 text-indigo-500 dark:text-indigo-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
+              <span>{userDept?.name || 'GLOBAL_ADMIN'}</span>
+              <span className="text-slate-400">///</span>
+              <span>{TEAMS.find(t => t.id === currentUser.teamId)?.name || 'GENERAL_OPS'}</span>
             </div>
-            <h2 className="text-2xl font-bold text-slate-800">Operational Intelligence Console</h2>
-            <p className="text-slate-500 text-sm">Welcome back, {currentUser.name}. Monitoring {filteredTasks.length} active threads.</p>
+            <h2 className="text-3xl font-bold text-[var(--text-primary)] tracking-tight mb-2">Operational Intelligence Console</h2>
+            <p className="text-slate-500 dark:text-slate-400 text-sm">Welcome, {currentUser.name}. Monitoring <span className="text-[var(--text-primary)] font-bold">{filteredTasks.length}</span> active execution threads.</p>
           </div>
-          <div className="flex gap-2">
+
+          <div className="flex gap-3">
+            {/* Theme Toggle */}
+            <div className="bg-white/50 dark:bg-slate-900/80 p-1.5 rounded-xl border border-[var(--border-color)] flex items-center backdrop-blur-md">
+              <button
+                onClick={() => setDarkMode(!darkMode)}
+                className={`p-2 rounded-lg transition-all ${darkMode ? 'text-slate-400 hover:text-white' : 'text-amber-500 bg-amber-100'}`}
+                title={darkMode ? "Switch into Light Mode" : "Switch into Dark Mode"}
+              >
+                {darkMode ? '🌙' : '☀️'}
+              </button>
+            </div>
+
             {/* View Mode Toggle */}
-            <div className="bg-white p-1 rounded-lg border flex items-center">
+            <div className="bg-white/50 dark:bg-slate-900/80 p-1.5 rounded-xl border border-[var(--border-color)] flex items-center backdrop-blur-md">
+              <button
+                onClick={() => setViewMode('BOARD')}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all duration-300 ${viewMode === 'BOARD' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span>🧩</span>
+                  <span>BOARD</span>
+                </div>
+              </button>
               <button
                 onClick={() => setViewMode('LIST')}
-                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${viewMode === 'LIST' ? 'bg-indigo-500 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all duration-300 ${viewMode === 'LIST' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5'}`}
               >
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-2">
                   <Icons.Task />
-                  <span>LIST</span>
+                  <span>LIST_VIEW</span>
                 </div>
               </button>
               <button
                 onClick={() => setViewMode('GANTT')}
-                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${viewMode === 'GANTT' ? 'bg-indigo-500 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all duration-300 ${viewMode === 'GANTT' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5'}`}
               >
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-2">
                   <span>📊</span>
-                  <span>GANTT</span>
+                  <span>GANTT.VISUAL</span>
                 </div>
               </button>
             </div>
 
-            <div className="bg-white px-3 py-2 rounded-lg border flex items-center gap-3">
+            <div className="bg-white/50 dark:bg-slate-900/80 px-4 py-2 rounded-xl border border-[var(--border-color)] flex items-center gap-4 backdrop-blur-md">
               <div className="text-right">
-                <p className="text-[10px] text-slate-400 font-bold uppercase">Performance Score</p>
-                <p className="text-sm font-bold text-slate-700">{(currentUser.reliabilityScore * 10).toFixed(1)}/10</p>
+                <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Reliability Score</p>
+                <p className="text-lg font-bold text-[var(--text-primary)] font-mono">{(currentUser.reliabilityScore * 10).toFixed(1)}<span className="text-slate-400 text-sm">/10</span></p>
               </div>
-              <div className="w-10 h-10 rounded-full border-4 border-indigo-100 flex items-center justify-center text-[10px] font-bold text-indigo-600">
-                {currentUser.reliabilityScore >= 0.9 ? 'S+' : currentUser.reliabilityScore >= 0.7 ? 'A' : 'B'}
+              <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl font-bold border-2 ${currentUser.reliabilityScore >= 0.9 ? 'border-emerald-500 text-emerald-500 bg-emerald-500/10' : 'border-amber-500 text-amber-500 bg-amber-500/10'}`}>
+                {currentUser.reliabilityScore >= 0.9 ? 'S' : currentUser.reliabilityScore >= 0.7 ? 'A' : 'B'}
               </div>
             </div>
           </div>
         </header>
 
+        <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+          <div className="glass-card p-4">
+            <p className="text-xs uppercase text-slate-500 tracking-wider">Active Projects</p>
+            <p className="text-2xl font-semibold text-[var(--text-primary)]">{projects.filter(p => p.status === 'ACTIVE').length}</p>
+          </div>
+          <div className="glass-card p-4">
+            <p className="text-xs uppercase text-slate-500 tracking-wider">Open Tasks</p>
+            <p className="text-2xl font-semibold text-[var(--text-primary)]">{filteredTasks.filter(t => t.status !== TaskStatus.COMPLETED).length}</p>
+          </div>
+          <div className="glass-card p-4">
+            <p className="text-xs uppercase text-slate-500 tracking-wider">At Risk</p>
+            <p className="text-2xl font-semibold text-red-600">{filteredTasks.filter(t => t.status === TaskStatus.AT_RISK || t.status === TaskStatus.OVERDUE).length}</p>
+          </div>
+          <div className="glass-card p-4">
+            <p className="text-xs uppercase text-slate-500 tracking-wider">Sprint Progress</p>
+            <p className="text-2xl font-semibold text-[var(--text-primary)]">
+              {filteredTasks.length === 0 ? '0%' : `${Math.round((filteredTasks.filter(t => t.status === TaskStatus.COMPLETED).length / filteredTasks.length) * 100)}%`}
+            </p>
+          </div>
+        </section>
+
         <ProjectManager
           currentUser={currentUser}
           onProjectsChange={(updatedProjects) => setProjects(updatedProjects)}
         />
+
+        <SprintManager
+          projects={projects}
+          sprints={sprints}
+          selectedSprintId={selectedSprintId}
+          onSelectSprint={setSelectedSprintId}
+          onSprintCreated={handleSprintCreated}
+        />
+
+        <section className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-8">
+          <BurndownChart data={burndown} />
+          <DeveloperActivityPanel items={activity} />
+          <SprintStatusPieChart sprints={sprints} />
+        </section>
+
+        <section className="glass-panel p-5 rounded-2xl mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold uppercase tracking-widest text-[var(--text-primary)]">Team Management</h3>
+            <span className="text-xs text-slate-500">Members: {visibleTeamMembers.length}</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {visibleTeamMembers.map(member => {
+              const memberTasks = tasks.filter(t => t.assigneeId === member.id && t.status !== TaskStatus.COMPLETED);
+              const workload = memberTasks.length;
+              return (
+                <div key={member.id} className="glass-card p-3">
+                  <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{member.name}</p>
+                  <p className="text-[11px] text-slate-500">{roleLabel(member.role)}</p>
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-[11px] text-slate-500">Open tasks</span>
+                    <span className={`text-xs font-semibold px-2 py-1 rounded ${workload >= 6 ? 'bg-red-100 text-red-700' : workload >= 3 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+                      {workload}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
           {/* Left Column: Actions & Tasks */}
@@ -392,233 +625,332 @@ const App: React.FC = () => {
 
             {/* Context-Aware Action Panel */}
             {canManage ? (
-              <div className="glass-panel p-6 rounded-2xl bg-white shadow-sm border-slate-200/60">
-                <h3 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-2 uppercase tracking-tight">
-                  <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
-                  Delegate New Workflow
+              <div className="glass-panel p-6 rounded-2xl relative overflow-hidden group">
+                <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
+                  <Icons.Brain />
+                </div>
+                <h3 className="text-sm font-bold text-white mb-6 flex items-center gap-3 uppercase tracking-widest border-b border-white/5 pb-4">
+                  <span className="w-2 h-2 bg-indigo-500 rounded-full shadow-[0_0_10px_#6366f1]"></span>
+                  Command Center <span className="text-slate-600">//</span> Delegate New Workflow
                 </h3>
-                <form onSubmit={handleCreateTask} className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <div className="md:col-span-2">
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Workflow Target</label>
-                    <input name="title" required className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium" placeholder="e.g. Critical Bug Fix: Payment Gateway" />
+                <form onSubmit={handleCreateTask} className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <div className="md:col-span-2 space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">Objective / Task Context</label>
+                    <input
+                      name="title"
+                      required
+                      className="input-field"
+                      placeholder="e.g. Critical Bug Fix: Payment Gateway Integration"
+                    />
                   </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Urgency</label>
-                    <select name="priority" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium">
+                  <div className="md:col-span-2 space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">Task Description</label>
+                    <input
+                      name="description"
+                      className="input-field"
+                      placeholder="Describe scope, acceptance, and risk context"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">Urgency Level</label>
+                    <select name="priority" className="input-field cursor-pointer">
                       <option value="LOW">Low Latency</option>
-                      <option value="MEDIUM">Standard</option>
-                      <option value="HIGH">Critical Path</option>
+                      <option value="MEDIUM">Standard Optimization</option>
+                      <option value="HIGH">CRITICAL PATH (Immediate)</option>
                     </select>
                   </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">TTL (Minutes)</label>
-                    <input name="deadline" type="number" defaultValue="10" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium" />
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">TTL (Minutes)</label>
+                    <input name="deadline" type="number" defaultValue="10" className="input-field font-mono" />
                   </div>
-                  <div className="md:col-span-4">
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
-                      Assign to Project (Optional)
+
+                  <div className="md:col-span-4 space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">
+                      Project Linkage
                     </label>
                     <select
                       name="projectId"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium"
+                      className="input-field cursor-pointer"
                     >
-                      <option value="">No Project (General Task)</option>
+                      <option value="">No Project (General Directive)</option>
                       {projects.filter(p =>
                         currentUser.role === UserRole.ADMIN ||
                         p.leadId === currentUser.id ||
                         p.memberIds.includes(currentUser.id)
                       ).map(project => (
                         <option key={project.id} value={project.id}>
-                          {project.name} {project.leadId === currentUser.id ? '(You lead)' : ''}
+                          {project.name} {project.leadId === currentUser.id ? '(Owner)' : ''}
                         </option>
                       ))}
                     </select>
-                    <p className="text-[9px] text-slate-400 mt-1">
-                      {projects.length === 0
-                        ? '⚠️ No projects found. Create a project in "Project Management" section above first.'
-                        : `Link this task to a specific project for better organization (${projects.filter(p => currentUser.role === UserRole.ADMIN || p.leadId === currentUser.id || p.memberIds.includes(currentUser.id)).length} available)`
-                      }
-                    </p>
                   </div>
-                  <div className="md:col-span-4">
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
-                      Required Skills (Auto-assigns to best match)
+
+                  <div className="md:col-span-4 space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">Sprint Linkage</label>
+                    <select name="sprintId" className="input-field cursor-pointer">
+                      <option value="">No sprint</option>
+                      {sprints.map(sprint => (
+                        <option key={sprint.id} value={sprint.id}>
+                          {sprint.name} ({new Date(sprint.startDate).toLocaleDateString()} - {new Date(sprint.endDate).toLocaleDateString()})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="md:col-span-4 space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider ml-1">
+                      Required Capabilities (Auto-Match)
                     </label>
                     <select
                       name="requiredSkills"
                       multiple
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium max-h-24"
+                      className="input-field min-h-[80px]"
                     >
                       {ALL_SKILLS.slice(0, 15).map(skill => (
                         <option key={skill} value={skill}>{skill}</option>
                       ))}
                     </select>
-                    <p className="text-[9px] text-slate-400 mt-1">
-                      💡 Selecting skills will auto-assign to employee with best skill+performance match
+                    <p className="text-[9px] text-slate-500 font-mono pl-1">
+                      &gt; Selecting skills triggers heuristic matching algorithm against employee registry.
                     </p>
                   </div>
-                  <div className="md:col-span-4 flex gap-2">
-                    <select name="assigneeId" className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm font-medium">
-                      <option value="">🤖 Auto-Assign (Skill + Performance Match)</option>
-                      {USERS.filter(u =>
-                        (u.deptId === currentUser.deptId || currentUser.role === UserRole.ADMIN) &&
-                        u.role !== UserRole.ADMIN
-                      ).map(u => (
-                        <option key={u.id} value={u.id}>{u.name} ({u.role}) - {(u.reliabilityScore * 10).toFixed(1)}/10</option>
-                      ))}
-                    </select>
-                    <button type="submit" className="bg-slate-800 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-600 transition shadow-lg shadow-slate-800/10">Deploy</button>
+
+                  <div className="md:col-span-4 flex gap-4 pt-2">
+                    <button
+                      type="button"
+                      onClick={(e) => handleSuggestPriority((e.currentTarget.form as HTMLFormElement))}
+                      className="px-4 py-3 rounded-lg border border-blue-300/40 text-blue-600 dark:text-blue-300 text-xs font-semibold hover:bg-blue-100/60 dark:hover:bg-blue-900/30 transition"
+                    >
+                      Suggest Priority (AI)
+                    </button>
+                    <div className="flex-1 relative">
+                      <select name="assigneeId" className="input-field appearance-none">
+                        <option value="">[AUTO] AI Agentic Assignment</option>
+                        {users.filter(u =>
+                            (u.deptId === currentUser.deptId || currentUser.role === UserRole.ADMIN) &&
+                            u.role === UserRole.ASSIGNEE &&
+                          u.role !== UserRole.ADMIN
+                        ).map(u => (
+                          <option key={u.id} value={u.id}>{u.name} [{u.role}] - Rel: {(u.reliabilityScore * 10).toFixed(1)}</option>
+                        ))}
+                      </select>
+                      <div className="absolute right-4 top-3.5 pointer-events-none text-slate-500 text-xs">▼</div>
+                    </div>
+                    <button type="submit" className="btn-primary glass-button px-8 flex items-center gap-2 group">
+                      <span>INITIALIZE</span>
+                      <span className="group-hover:translate-x-1 transition-transform">→</span>
+                    </button>
                   </div>
+                  {aiPriorityHint && (
+                    <p className="md:col-span-4 text-xs text-blue-700 dark:text-blue-300 bg-blue-50/70 dark:bg-blue-900/20 border border-blue-200/50 dark:border-blue-500/20 rounded-lg px-3 py-2">
+                      {aiPriorityHint}
+                    </p>
+                  )}
                 </form>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Current Load</p>
-                  <p className="text-2xl font-bold text-slate-800 mt-1">{filteredTasks.length}</p>
-                  <p className="text-[10px] text-green-500 font-medium mt-1">Within optimal capacity</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="glass-panel p-6 rounded-2xl">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Current Workflow Load</p>
+                  <div className="flex items-end gap-2 mt-2">
+                    <p className="text-3xl font-bold text-white leading-none">{filteredTasks.length}</p>
+                    <span className="text-xs text-slate-400 mb-1">active threads</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1 mt-4 rounded-full overflow-hidden">
+                    <div className="bg-emerald-500 h-full w-[45%]"></div>
+                  </div>
+                  <p className="text-[10px] text-emerald-400 font-mono mt-2">CAPACITY_OPTIMAL</p>
                 </div>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">AI-Triggered Reminders</p>
-                  <p className="text-2xl font-bold text-slate-800 mt-1">{filteredTasks.filter(t => t.lastAction === ActionType.REMIND).length}</p>
-                  <p className="text-[10px] text-indigo-500 font-medium mt-1">No critical alerts pending</p>
+                <div className="glass-panel p-6 rounded-2xl">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Pending Alerts</p>
+                  <div className="flex items-end gap-2 mt-2">
+                    <p className="text-3xl font-bold text-white leading-none">{filteredTasks.filter(t => t.lastAction === ActionType.REMIND).length}</p>
+                    <span className="text-xs text-slate-400 mb-1">signals</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1 mt-4 rounded-full overflow-hidden">
+                    <div className="bg-indigo-500 h-full w-[10%]"></div>
+                  </div>
+                  <p className="text-[10px] text-indigo-400 font-mono mt-2">SYSTEM_STABLE</p>
                 </div>
-                <div className="bg-white p-4 rounded-xl border border-indigo-200 bg-indigo-50/20 shadow-sm">
-                  <p className="text-[10px] font-bold text-indigo-400 uppercase">Estimated Recovery</p>
-                  <p className="text-2xl font-bold text-indigo-800 mt-1">94%</p>
-                  <p className="text-[10px] text-indigo-400 font-medium mt-1">Based on historical RAG patterns</p>
+                <div className="glass-panel p-6 rounded-2xl bg-indigo-900/10 border-indigo-500/20">
+                  <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Recovery Confidence</p>
+                  <div className="flex items-end gap-2 mt-2">
+                    <p className="text-3xl font-bold text-indigo-300 leading-none">94.2%</p>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1 mt-4 rounded-full overflow-hidden">
+                    <div className="bg-indigo-400 h-full w-[94%]"></div>
+                  </div>
+                  <p className="text-[10px] text-indigo-400/70 font-mono mt-2">PREDICTIVE_MODEL_V2</p>
                 </div>
               </div>
             )}
 
             {/* Main Task Feed */}
-            {viewMode === 'LIST' ? (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="p-5 border-b flex justify-between items-center bg-slate-50/50">
-                  <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                    <Icons.Task />
-                    Operational Monitor
+            {viewMode === 'BOARD' ? (
+              <div className="glass-panel p-6 rounded-2xl min-h-[400px]">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="font-bold text-white flex items-center gap-2">
+                    <span>🧩</span>
+                    <span className="uppercase tracking-widest text-sm">Sprint Board</span>
                   </h3>
-                  <div className="flex gap-2">
-                    <span className="px-2 py-1 bg-white border text-[10px] font-bold rounded text-slate-500">REAL-TIME</span>
-                  </div>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-50/50 text-slate-400 uppercase text-[10px] font-bold">
-                      <tr>
-                        <th className="px-6 py-4">Context</th>
-                        <th className="px-6 py-4">Assignee / Project</th>
-                        <th className="px-6 py-4">Status</th>
-                        <th className="px-6 py-4">TTL</th>
-                        <th className="px-6 py-4">Execution Risk</th>
-                        <th className="px-6 py-4">Agentic Response</th>
-                        <th className="px-6 py-4">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {filteredTasks.map(task => (
-                        <tr
-                          key={task.id}
-                          onClick={() => setSelectedTaskId(task.id)}
-                          className={`hover:bg-indigo-50/30 cursor-pointer transition-colors ${selectedTaskId === task.id ? 'bg-indigo-50' : ''}`}
-                        >
-                          <td className="px-6 py-4">
-                            <div className="font-bold text-slate-800">{task.title}</div>
-                            <div className="flex items-center gap-2 mt-1 flex-wrap">
-                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${task.priority === 'HIGH' ? 'text-red-600 border-red-100 bg-red-50' : 'text-slate-500 border-slate-200'}`}>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                  {[TaskStatus.CREATED, TaskStatus.IN_PROGRESS, TaskStatus.SUBMITTED, TaskStatus.COMPLETED].map(status => (
+                    <div key={status} className="rounded-xl border border-[var(--border-color)] bg-white/70 dark:bg-slate-900/40 p-3">
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="text-xs font-semibold tracking-wide text-[var(--text-primary)]">{status.replace('_', ' ')}</p>
+                        <span className="text-[10px] text-slate-500">{filteredTasks.filter(t => t.status === status).length}</span>
+                      </div>
+                      <div className="space-y-2 min-h-[80px]">
+                        {filteredTasks.filter(t => t.status === status).map(task => (
+                          <div
+                            key={task.id}
+                            onClick={() => setSelectedTaskId(task.id)}
+                            className="glass-card p-3 cursor-pointer hover:border-indigo-400"
+                          >
+                            <p className="text-xs font-semibold text-[var(--text-primary)] truncate">{task.title}</p>
+                            <p className="text-[10px] text-slate-500 mt-1">{users.find(u => u.id === task.assigneeId)?.name || 'Unassigned'}</p>
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <span className={`badge ${task.priority === 'HIGH' ? 'bg-red-500/10 text-red-500 border-red-300/40' : task.priority === 'MEDIUM' ? 'bg-yellow-500/10 text-yellow-700 border-yellow-300/40' : 'bg-green-500/10 text-green-700 border-green-300/40'}`}>
                                 {task.priority}
                               </span>
-                              <span className="text-[10px] text-slate-400 font-medium truncate max-w-[120px]">
-                                👤 {users.find(u => u.id === task.assigneeId)?.name || 'Unassigned'}
-                              </span>
-                              {task.requiredSkills && task.requiredSkills.length > 0 && (
-                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100">
-                                  {task.requiredSkills.length} skill{task.requiredSkills.length > 1 ? 's' : ''} req.
-                                </span>
-                              )}
-                              {task.projectId && (
-                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100">
-                                  📁 {projects.find(p => p.id === task.projectId)?.name || 'Project'}
-                                </span>
+                              {canUpdateTask(task) && task.status !== TaskStatus.COMPLETED && (
+                                <select
+                                  value={task.status}
+                                  onChange={(e) => handleUpdateTaskStatus(task.id, e.target.value as TaskStatus)}
+                                  className="text-[10px] px-2 py-1 rounded border border-slate-300 bg-white dark:bg-slate-800 text-[var(--text-primary)]"
+                                >
+                                  <option value={TaskStatus.CREATED}>Created</option>
+                                  <option value={TaskStatus.IN_PROGRESS}>In Progress</option>
+                                  <option value={TaskStatus.SUBMITTED}>Submitted</option>
+                                  <option value={TaskStatus.COMPLETED}>Completed</option>
+                                </select>
                               )}
                             </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-bold text-slate-700">
-                                  👤 {users.find(u => u.id === task.assigneeId)?.name || 'Unassigned'}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : viewMode === 'LIST' ? (
+              <div className="glass-panel p-6 rounded-2xl min-h-[400px]">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="font-bold text-white flex items-center gap-3">
+                    <Icons.Task />
+                    <span className="uppercase tracking-widest text-sm">Live Monitoring Feed</span>
+                  </h3>
+                  <div className="flex gap-2">
+                    <span className="px-2 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold rounded uppercase tracking-wider animate-pulse">
+                      ● Stream Active
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {filteredTasks.map(task => {
+                    const isSelected = selectedTaskId === task.id;
+                    return (
+                      <div
+                        key={task.id}
+                        onClick={() => setSelectedTaskId(task.id)}
+                        className={`
+                            glass-card p-4 cursor-pointer hover:bg-slate-800/60
+                            ${isSelected ? 'border-indigo-500/50 bg-slate-800/80 shadow-[0_0_15px_rgba(99,102,241,0.15)] scale-[1.01]' : 'hover:scale-[1.005]'}
+                          `}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          {/* Left: Indicator & Title */}
+                          <div className="flex items-start gap-3 flex-1">
+                            <div className={`mt-1.5 w-2 h-2 rounded-full shadow-[0_0_8px_currentColor] ${task.status === 'COMPLETED' ? 'text-emerald-500 bg-emerald-500' :
+                              task.status === 'AT_RISK' ? 'text-amber-500 bg-amber-500' :
+                                'text-indigo-500 bg-indigo-500'
+                              }`}></div>
+
+                            <div>
+                              <h4 className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-slate-200'}`}>
+                                {task.title}
+                              </h4>
+                              <div className="flex items-center gap-3 mt-2">
+                                <span className={`badge ${task.priority === 'HIGH' ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-slate-700/50 text-slate-400 border-slate-700'}`}>
+                                  {task.priority}
                                 </span>
-                              </div>
-                              {task.projectId && (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100">
-                                    📁 {projects.find(p => p.id === task.projectId)?.name || 'Project'}
+                                <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+                                  <span className="opacity-50">BY</span>
+                                  {users.find(u => u.id === task.assigneeId)?.name || 'Unassigned'}
+                                </span>
+                                {task.projectId && (
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20">
+                                    {projects.find(p => p.id === task.projectId)?.name}
                                   </span>
-                                </div>
-                              )}
+                                )}
+                              </div>
                             </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase ${getStatusColor(task.status)}`}>
+                          </div>
+
+                          {/* Center: Risk Meter */}
+                          <div className="flex flex-col items-end gap-1 w-32 shrink-0">
+                            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Risk Metric</div>
+                            <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all duration-1000 ${task.riskScore > 75 ? 'bg-red-500 shadow-[0_0_8px_#ef4444]' :
+                                  task.riskScore > 40 ? 'bg-amber-400 shadow-[0_0_8px_#fbbf24]' :
+                                    'bg-emerald-400 shadow-[0_0_8px_#34d399]'
+                                  }`}
+                                style={{ width: `${task.riskScore}%` }}
+                              ></div>
+                            </div>
+                            <div className="text-[10px] font-mono text-slate-400">{task.riskScore}% / 100%</div>
+                          </div>
+
+                          {/* Right: Actions */}
+                          <div className="flex flex-col items-end justify-between self-stretch gap-2">
+                            <span className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider ${getStatusColor(task.status)}`}>
                               {task.status}
                             </span>
-                          </td>
-                          <td className="px-6 py-4 font-mono text-xs text-slate-500">
-                            {task.deadline < Date.now() ? (
-                              <span className="text-red-500 font-bold">LATE</span>
-                            ) : (
-                              `${Math.ceil((task.deadline - Date.now()) / (1000 * 60))}m`
-                            )}
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex items-center gap-3">
-                              <div className="flex-1 bg-slate-100 h-1.5 rounded-full overflow-hidden w-20">
-                                <div
-                                  className={`h-full transition-all duration-500 ${task.riskScore > 75 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : task.riskScore > 40 ? 'bg-amber-400' : 'bg-green-400'}`}
-                                  style={{ width: `${task.riskScore}%` }}
-                                />
-                              </div>
-                              <span className={`text-[10px] font-bold ${task.riskScore > 75 ? 'text-red-500' : 'text-slate-400'}`}>
-                                {task.riskScore}%
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex items-center gap-2">
-                              <span className="text-lg">{getActionIcon(task.lastAction)}</span>
-                              <span className="text-[11px] font-bold text-slate-600 uppercase tracking-tight">
-                                {task.lastAction === ActionType.NONE ? 'Scanning' : task.lastAction.replace('_', ' ')}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-4">
+
                             {task.status !== 'COMPLETED' && task.assigneeId === currentUser.id && (
                               <button
-                                onClick={() => handleCompleteTask(task.id)}
-                                className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-[10px] font-bold rounded-lg transition-colors"
+                                onClick={(e) => { e.stopPropagation(); handleCompleteTask(task.id); }}
+                                className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold rounded transition-colors flex items-center gap-1.5"
                               >
-                                ✓ Complete
+                                <span>✓</span> Resolve
                               </button>
                             )}
-                            {task.status === 'COMPLETED' && (
-                              <span className="text-[10px] text-green-600 font-bold">
-                                ✓ Done
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                      {filteredTasks.length === 0 && (
-                        <tr>
-                          <td colSpan={7} className="px-6 py-20 text-center text-slate-400 italic">
-                            No active monitoring threads found in your current scope.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                          </div>
+                        </div>
+
+                        {/* Expanded Details (Simple Slide Down) */}
+                        {isSelected && (
+                          <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-1">
+                            <div>
+                              <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Time To Live</div>
+                              <div className={`font-mono text-sm ${task.deadline < Date.now() ? 'text-red-400' : 'text-slate-300'}`}>
+                                {task.deadline < Date.now() ? 'EXPIRED' : `${Math.ceil((task.deadline - Date.now()) / (1000 * 60))} Mins`}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Latest Agent Action</div>
+                              <div className="flex items-center gap-2 text-indigo-300 text-xs">
+                                <span>{getActionIcon(task.lastAction)}</span>
+                                <span>{task.lastAction === ActionType.NONE ? 'System Scanning...' : task.lastAction}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {filteredTasks.length === 0 && (
+                    <div className="py-20 text-center">
+                      <div className="w-16 h-16 bg-slate-800/50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-600">
+                        <Icons.Task />
+                      </div>
+                      <p className="text-slate-500 text-sm">All systems nominal. No active threads in this vector.</p>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -628,79 +960,146 @@ const App: React.FC = () => {
 
           {/* Right Column: AI Trace Panel */}
           <div className="space-y-6">
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-indigo-200 min-h-[600px] sticky top-8">
+            <div className="glass-panel p-6 rounded-2xl min-h-[600px] sticky top-8 border-indigo-500/20 shadow-[0_0_20px_rgba(99,102,241,0.05)]">
               <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-3 text-indigo-600">
-                  <div className="p-2 bg-indigo-50 rounded-lg">
+                <div className="flex items-center gap-3 text-indigo-400">
+                  <div className="p-2 bg-indigo-500/10 rounded-lg border border-indigo-500/20">
                     <Icons.Brain />
                   </div>
-                  <h3 className="text-sm font-bold uppercase tracking-widest">Decision Trace</h3>
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-white">Decision Trace</h3>
+                    <p className="text-[9px] text-indigo-500/60 font-mono">NEURAL_LAYER_v4</p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
-                  <span className="text-[10px] font-bold text-slate-400">ACTIVE</span>
+                <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                  <span className="text-[10px] font-bold text-emerald-400">ACTIVE</span>
                 </div>
               </div>
 
               {!selectedTaskId ? (
-                <div className="flex flex-col items-center justify-center py-32 text-center">
-                  <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-4 border border-dashed border-slate-200">
+                <div className="flex flex-col items-center justify-center py-32 text-center opacity-50">
+                  <div className="w-20 h-20 bg-slate-800/50 rounded-full flex items-center justify-center text-slate-600 mb-6 border border-dashed border-slate-700">
                     <Icons.Task />
                   </div>
-                  <p className="text-sm font-bold text-slate-400">Select an execution thread</p>
-                  <p className="text-[11px] text-slate-400 mt-1 max-w-[200px]">View the underlying RAG context and agentic reasoning.</p>
+                  <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">Awaiting Selection</p>
+                  <p className="text-[11px] text-slate-500 mt-2 font-mono max-w-[200px]">Select an execution thread to inspect agent reasoning logic.</p>
                 </div>
               ) : (
                 <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
-                  <section>
-                    <label className="text-[10px] uppercase font-black text-slate-300 tracking-[0.2em] mb-3 block">RAG Memory Recall</label>
-                    <div className="space-y-2">
-                      {selectedLogs[0]?.retrievedMemories.map((m, idx) => (
-                        <div key={idx} className="p-3 text-[11px] bg-indigo-50/40 text-indigo-700 border-l-4 border-indigo-400 rounded-r-xl font-medium leading-relaxed">
-                          <span className="opacity-40 mr-1 text-xs">#</span> {m}
-                        </div>
-                      )) || <div className="text-[11px] text-slate-400 italic">Contextualizing behavioral history...</div>}
-                    </div>
-                  </section>
 
+                  {/* Visual Escalation Path (Timeline) */}
                   <section>
-                    <label className="text-[10px] uppercase font-black text-slate-300 tracking-[0.2em] mb-3 block">SLM reasoning logic</label>
-                    <div className="p-5 bg-slate-900 text-indigo-100 rounded-2xl text-[12px] leading-relaxed font-mono relative overflow-hidden group">
-                      <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-30 transition">
-                        <Icons.Brain />
-                      </div>
-                      <span className="text-indigo-400 mr-2">$</span>
-                      {selectedLogs[0]?.explanation || "Initializing neural explanation layer..."}
-                    </div>
-                  </section>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-[0.2em] mb-4 block flex justify-between">
+                      <span>Execution Chain</span>
+                      <span className="text-indigo-500">LIVE</span>
+                    </label>
+                    <div className="relative pl-4 pt-2 ml-2">
+                      {/* Vertical Line */}
+                      <div className="absolute left-[21px] top-4 bottom-4 w-0.5 bg-gradient-to-b from-emerald-500 via-indigo-500 to-slate-800"></div>
 
-                  <section>
-                    <label className="text-[10px] uppercase font-black text-slate-300 tracking-[0.2em] mb-3 block">Escalation Path</label>
-                    <div className="relative pl-8 pt-2">
-                      <div className="absolute left-[15px] top-4 bottom-4 w-[2px] bg-indigo-100"></div>
-                      {(selectedLogs[0]?.escalationPath || [USERS.find(u => u.id === selectedTask?.assigneeId)?.name || 'Unassigned']).map((step, idx, arr) => (
-                        <div key={idx} className="relative mb-6 last:mb-0 flex items-center gap-4 group">
-                          <div className={`absolute -left-[23px] w-4 h-4 rounded-full border-4 border-white z-10 shadow-sm transition-all duration-300 ${idx === 0 ? 'bg-green-500' : idx < arr.length - 1 ? 'bg-indigo-500' : 'bg-slate-200'}`}></div>
-                          <div>
-                            <span className={`text-[11px] font-bold block ${idx < arr.length - 1 ? 'text-slate-800' : 'text-slate-400'}`}>
+                      {(selectedLogs[0]?.escalationPath || [users.find(u => u.id === selectedTask?.assigneeId)?.name || 'Unassigned']).map((step, idx, arr) => (
+                        <div key={idx} className="relative mb-8 last:mb-0 flex items-center gap-4 group">
+                          {/* Node */}
+                          <div className={`
+                            absolute -left-[4px] w-3 h-3 rounded-full border-2 z-10 shadow-[0_0_10px_currentColor] transition-all duration-300
+                            ${idx === 0 ? 'bg-black border-emerald-500 text-emerald-500 scale-125' : idx < arr.length - 1 ? 'bg-slate-900 border-indigo-500 text-indigo-500' : 'bg-slate-900 border-slate-600 text-slate-600'}
+                          `}></div>
+
+                          <div className={`
+                              ml-6 p-3 rounded-lg border w-full transition-all duration-300
+                              ${idx === 0
+                              ? 'bg-emerald-500/10 border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.1)]'
+                              : 'bg-slate-800/40 border-slate-700/50 hover:bg-slate-800/80'}
+                          `}>
+                            <div className="flex justify-between items-center mb-1">
+                              <span className={`text-[10px] uppercase font-bold tracking-wider ${idx === 0 ? 'text-emerald-400' : 'text-slate-400'}`}>
+                                {idx === 0 ? 'Active Executor' : idx === arr.length - 1 ? 'Target Node' : 'Escalation Node'}
+                              </span>
+                              {idx === 0 && <span className="text-[9px] text-emerald-500 font-mono animate-pulse">Running...</span>}
+                            </div>
+                            <span className={`text-xs font-bold block ${idx === 0 ? 'text-white' : 'text-slate-300'}`}>
                               {step}
-                            </span>
-                            <span className="text-[9px] text-slate-400 uppercase font-bold tracking-tighter">
-                              {idx === 0 ? 'ACTIVE EXECUTOR' : idx === arr.length - 1 ? 'PENDING TARGET' : 'INTERMEDIARY'}
                             </span>
                           </div>
                         </div>
                       ))}
                     </div>
                   </section>
+
+                  <div className="h-px bg-slate-800 w-full"></div>
+
+                  <section>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-[0.2em] mb-3 block">RAG Memory Context</label>
+                    <div className="space-y-2">
+                      {selectedLogs[0]?.retrievedMemories.map((m, idx) => (
+                        <div key={idx} className="p-3 text-[10px] bg-indigo-900/20 text-indigo-300 border-l-2 border-indigo-500/50 rounded-r-lg font-mono leading-relaxed hover:bg-indigo-900/30 transition-colors">
+                          <span className="opacity-50 mr-2 select-none">[{idx}]</span> {m}
+                        </div>
+                      )) || <div className="text-[11px] text-slate-600 italic font-mono pl-2">Using zero-shot reasoning (No historical context)...</div>}
+                    </div>
+                  </section>
+
+                  <section>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-[0.2em] mb-3 block">Logic Kernel Output</label>
+                    <div className="p-4 bg-black/50 border border-slate-800 rounded-xl text-[11px] leading-relaxed font-mono relative overflow-hidden group shadow-inner">
+                      <div className="absolute top-0 right-0 p-2 opacity-20 group-hover:opacity-40 transition">
+                        <Icons.Brain />
+                      </div>
+                      <span className="text-emerald-500 mr-2 animate-pulse">root@agent:~#</span>
+                      <span className="text-slate-300">
+                        {selectedLogs[0]?.explanation || "Initializing neural explanation layer..."}
+                      </span>
+                      <span className="inline-block w-1.5 h-3 bg-emerald-500 ml-1 animate-pulse align-middle"></span>
+                    </div>
+                  </section>
+
+                  <section>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-[0.2em] mb-3 block">Task Comments</label>
+                    <div className="space-y-2 max-h-44 overflow-auto pr-1">
+                      {(selectedTask?.comments || []).length === 0 ? (
+                        <div className="text-[11px] text-slate-500 italic">No comments yet.</div>
+                      ) : (selectedTask?.comments || []).map(comment => (
+                        <div key={comment.id} className="p-2 rounded border border-[var(--border-color)] bg-white/50 dark:bg-slate-900/40">
+                          <div className="flex items-center justify-between">
+                            <p className="text-[11px] font-semibold text-[var(--text-primary)]">{comment.userName}</p>
+                            <p className="text-[10px] text-slate-500">{new Date(comment.createdAt).toLocaleString()}</p>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-1">{comment.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        placeholder="Write an update..."
+                        className="input-field py-2"
+                      />
+                      <button onClick={handleAddComment} className="btn-primary px-3 py-2 rounded text-xs font-semibold">Post</button>
+                    </div>
+                  </section>
+
+                  <section>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-[0.2em] mb-3 block">Task History</label>
+                    <div className="space-y-2 max-h-40 overflow-auto pr-1">
+                      {(selectedTask?.history || []).slice().reverse().slice(0, 8).map(entry => (
+                        <div key={entry.id} className="text-[11px] p-2 rounded border border-[var(--border-color)] bg-white/40 dark:bg-slate-900/30">
+                          <p className="font-semibold text-[var(--text-primary)]">{entry.action.replace('_', ' ')}</p>
+                          <p className="text-slate-500">{new Date(entry.createdAt).toLocaleString()}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
                 </div>
               )}
             </div>
 
-            <div className="bg-amber-50/50 border border-amber-100 rounded-2xl p-5 text-[11px] text-amber-700 flex gap-4">
+            <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 text-[10px] text-amber-500/80 flex gap-3 items-start">
               <div className="shrink-0 text-lg">🛡️</div>
-              <p className="leading-normal">
-                <strong>Data Privacy Protocol:</strong> Reasoning is performed on tokenized behavioral abstractions. No direct user content is exposed to third-party LLM providers.
+              <p className="leading-relaxed font-medium">
+                <strong>Compliance Protocol:</strong> Reasoning is performed on tokenized behavioral abstractions. No direct user content is exposed to third-party LLM providers.
               </p>
             </div>
           </div>

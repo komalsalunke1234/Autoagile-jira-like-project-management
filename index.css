@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light Mode Variables - Professional Blue/White/Black Theme */
+    --bg-app: #f4f8fc;
+    --bg-panel: rgba(255, 255, 255, 0.88);
+    --bg-card: #ffffff;
+    --bg-input: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #334155;
+    --border-color: #d1d9e6;
+    --shadow-color: rgba(15, 23, 42, 0.08);
+  }
+
+  .dark {
+    /* Dark Mode Variables */
+    --bg-app: #0b1324;
+    /* Slate 900 */
+    --bg-panel: rgba(10, 18, 34, 0.72);
+    --bg-card: rgba(20, 31, 52, 0.55);
+    --bg-input: rgba(15, 23, 42, 0.8);
+    --text-primary: #f8fafc;
+    /* Slate 50 */
+    --text-secondary: #94a3b8;
+    /* Slate 400 */
+    --border-color: #334155;
+    /* Slate 700 */
+    --shadow-color: rgba(0, 0, 0, 0.4);
+  }
+
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-family: 'Manrope', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background-color: var(--bg-panel);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 10px 30px var(--shadow-color);
+    @apply rounded-2xl p-6 relative overflow-hidden transition-colors duration-300;
+  }
+
+  .glass-card {
+    background-color: var(--bg-card);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-color);
+    @apply rounded-xl transition-all duration-300;
+  }
+
+  .glass-button {
+    @apply px-4 py-2 rounded-lg font-bold transition-all duration-300 backdrop-blur-sm border border-transparent;
+  }
+
+  .btn-primary {
+    @apply bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-700/20 active:scale-95;
+  }
+
+  .nav-item {
+    color: var(--text-secondary);
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-300 hover:text-white hover:bg-blue-600;
+  }
+
+  .dark .nav-item:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+  }
+
+  .input-field {
+    background-color: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    @apply w-full px-4 py-3 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 outline-none transition-all placeholder:text-slate-400;
+  }
+
+  /* Specific fix for inputs in dark mode to prevent white background */
+  .dark .input-field {
+    color: #f8fafc;
+  }
+
+  .badge {
+    @apply px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border;
+  }
+}
+
+@layer utilities {
+  .text-glow {
+    text-shadow: 0 0 10px rgba(37, 99, 235, 0.35);
+  }
+
+  .animate-shimmer {
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite linear;
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+
+    100% {
+      background-position: -200% 0;
+    }
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--bg-app);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #64748b;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+}

@@ -36,5 +36,6 @@ async def close_mongo_connection():
 USERS_COLLECTION = "users"
 PROJECTS_COLLECTION = "projects"
 TASKS_COLLECTION = "tasks"
+SPRINTS_COLLECTION = "sprints"
 USER_ACTIONS_COLLECTION = "user_actions"
 ESCALATIONS_COLLECTION = "escalations"
